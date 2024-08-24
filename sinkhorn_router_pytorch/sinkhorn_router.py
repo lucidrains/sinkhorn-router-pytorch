@@ -153,6 +153,16 @@ class SinkhornRouter(Module):
             )
 
             gate_values, routed_indices = competitive_gates.topk(tokens_per_expert, dim = -2)
+            hard_gate_values = (gate_values > 0.5).float()
+
+        # straight through if training
+
+        if self.training and self.competitive:
+            gate_values = hard_gate_values + gate_values - gate_values.detach()
+        else:
+            gate_values = hard_gate_values
+
+        # causal, non-competitive will select the gate logits and use the sigmoid - used in megatron
 
         if not self.competitive:
             selected_gate_logits = einx.get_at('... [n] e, ... m e -> ... m e', gate_logits, routed_indices)
