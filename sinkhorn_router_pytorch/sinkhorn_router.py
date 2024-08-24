@@ -36,7 +36,8 @@ def sinkhorn(
     num_iters = 8,
     gumbel = False,
     temperature = 1.,
-    eps = 1e-6
+    eps = 1e-6,
+    noise_inv_temp = 1.
 ):
     t = log(t, eps)
 
@@ -44,7 +45,7 @@ def sinkhorn(
     t = t / temperature
 
     if gumbel:
-        t = t + gumbel_like(t, eps)
+        t = t + gumbel_like(t, eps) * noise_inv_temp
 
     for _ in range(num_iters):
         t = t - t.logsumexp(dim = -2, keepdim = True)
@@ -61,10 +62,11 @@ class SinkhornRouter(Module):
         *,
         experts: ModuleList | List[Module] | Tensor | None = None,
         causal = False,
-        gumbel_noise = False,
         sinkhorn_iters = 8,
         heads = 1,
         temperature = 1.,
+        gumbel_noise = False,
+        noise_inv_temp = 1.,
         num_experts: int | None = None,
         competitive: bool | None = None
     ):
@@ -100,12 +102,14 @@ class SinkhornRouter(Module):
 
         self.temperature = temperature
         self.gumbel_noise = gumbel_noise
+        self.noise_inv_temp = noise_inv_temp
         self.sinkhorn_iters = sinkhorn_iters
 
     def forward(
         self,
         x,
-        mask = None
+        mask = None,
+        noise_inv_temp: float | None = None
     ):
         """
         ein notation:
@@ -116,6 +120,8 @@ class SinkhornRouter(Module):
         m - tokens per expert
         d, i, o - feature dimension (input and output dimension)
         """
+
+        noise_inv_temp = default(noise_inv_temp, self.noise_inv_temp)
 
         seq_len, single_headed = x.shape[-2], x.ndim == 3
         assert divisible_by(seq_len, self.num_experts)
@@ -149,7 +155,8 @@ class SinkhornRouter(Module):
                 gate_logits,
                 temperature = self.temperature,
                 gumbel = self.gumbel_noise,
-                num_iters = self.sinkhorn_iters
+                num_iters = self.sinkhorn_iters,
+                noise_inv_temp = noise_inv_temp
             )
 
             gate_values, routed_indices = competitive_gates.topk(tokens_per_expert, dim = -2)
