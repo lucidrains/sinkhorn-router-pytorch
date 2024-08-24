@@ -1,4 +1,5 @@
 from __future__ import annotations
+from math import ceil
 from contextlib import nullcontext
 
 from typing import List
@@ -21,6 +22,17 @@ def default(v, d):
 
 def divisible_by(num, den):
     return (num % den) == 0
+
+def pad_seq_to_multiple(t, mult):
+    seq_len = t.shape[1]
+    next_seq_len_mult = ceil(seq_len / mult) * mult
+    remainder = next_seq_len_mult - seq_len
+
+    if remainder == 0:
+        return t, remainder
+
+    t = F.pad(t, (0, 0, 0, remainder), value = 0.)
+    return t, remainder
 
 # sinkhorn related functions
 
@@ -123,8 +135,16 @@ class SinkhornRouter(Module):
 
         noise_inv_temp = default(noise_inv_temp, self.noise_inv_temp)
 
-        seq_len, single_headed = x.shape[-2], x.ndim == 3
-        assert divisible_by(seq_len, self.num_experts)
+        batch, seq_len, single_headed = x.shape[0], x.shape[-2], x.ndim == 3
+
+        # auto pad to correct multiple for divying up tokens amongst 'experts'
+
+        x, seq_pad = pad_seq_to_multiple(x, self.num_experts)
+
+        if seq_pad > 0 and not exists(mask):
+            mask = x.new_ones((batch, seq_len)).bool()
+            mask = F.pad(mask, (0, seq_pad), value = False)
+
         tokens_per_expert = seq_len // self.num_experts
 
         # handle single headed
@@ -141,7 +161,7 @@ class SinkhornRouter(Module):
         # masking for variable sequence lengths
 
         if exists(mask):
-            gate_logits = einx.where('b n, b h n e, -> b h n e', mask, gate_logits, -torch.finfo(gates.dtype).max)
+            gate_logits = einx.where('b n, b h n e, -> b h n e', mask, gate_logits, -torch.finfo(gate_logits.dtype).max)
 
         # sinkhorn ensures balanced routing
         # if non-competitive, do not differentiate through sinkhorn, technique came from megatron, afaict
@@ -228,6 +248,10 @@ class SinkhornRouter(Module):
             routed_indices,
             outputs
         )
+
+        # remove seq padding if auto-padded
+
+        routed_back_outputs = routed_back_outputs[..., :seq_len, :]
 
         # if single headed to start off with, squeeze out
 
