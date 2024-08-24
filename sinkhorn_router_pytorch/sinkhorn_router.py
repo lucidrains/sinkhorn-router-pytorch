@@ -58,15 +58,21 @@ class SinkhornRouter(Module):
     def __init__(
         self,
         dim,
-        experts: ModuleList | List[Module] | Tensor,
+        *,
+        experts: ModuleList | List[Module] | Tensor | None = None,
         causal = False,
         gumbel_noise = False,
         sinkhorn_iters = 8,
         heads = 1,
         temperature = 1.,
+        num_experts: int | None = None,
         competitive: bool | None = None
     ):
         super().__init__()
+        assert exists(experts) ^ exists(num_experts), 'either `experts` or `num_experts` is given, but not both'
+
+        if exists(experts):
+            num_experts = len(experts)
 
         self.heads = heads
 
@@ -79,14 +85,13 @@ class SinkhornRouter(Module):
         # experts are a ModuleList where length is number of experts
         # if a Tensor is given, it must be in shape of (experts, [optional] heads, dim_in, dim_out)
 
-        if heads > 1:
+        if heads > 1 and exists(experts):
             assert torch.is_tensor(experts) and experts.ndim == 4 and experts.shape[1] == heads
 
         if isinstance(experts, list):
             experts = ModuleList(experts)
 
         self.experts = experts
-        num_experts = len(experts)
         self.num_experts = num_experts
 
         # gating and sinkhorn related
@@ -121,7 +126,7 @@ class SinkhornRouter(Module):
         if single_headed:
             x = rearrange(x, 'b n d -> b 1 n d')
 
-        assert x.shape[1] == self.heads
+        assert x.shape[1] == self.heads, f'expected input to have head dimension of {self.heads} but received {x.shape[1]}'
 
         # project to gates
 
@@ -153,7 +158,13 @@ class SinkhornRouter(Module):
             selected_gate_logits = einx.get_at('... [n] e, ... m e -> ... m e', gate_logits, routed_indices)
             gate_values = gate_values * selected_gate_logits.sigmoid()
 
-        gate_values = rearrange(gate_values, '... m e -> e ... m 1')
+        # return gates and routing indices if no experts
+
+        if not exists(self.experts):
+            if single_headed:
+                routed_indices, gate_values = tuple(rearrange(t, 'b 1 ... -> b ...') for t in (routed_indices, gate_values))
+
+            return routed_indices, gate_values
 
         # get routed input
 
@@ -182,7 +193,10 @@ class SinkhornRouter(Module):
 
         # multiply by the gates, competitive or not
 
-        outputs = outputs * gate_values
+        outputs = einx.multiply(
+            'e b h m d, b h m e -> e b h m d',
+            outputs, gate_values
+        )
 
         # route back
 
