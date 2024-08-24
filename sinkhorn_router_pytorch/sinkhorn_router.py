@@ -9,7 +9,7 @@ from torch.nn import Module, ModuleList
 import torch.nn.functional as F
 
 import einx
-from einops import rearrange
+from einops import rearrange, einsum
 
 # helper functions
 
@@ -62,10 +62,13 @@ class SinkhornRouter(Module):
         causal = False,
         gumbel_noise = False,
         sinkhorn_iters = 8,
+        heads = 1,
         temperature = 1.,
         competitive: bool | None = None
     ):
         super().__init__()
+
+        self.heads = heads
 
         # only use competitive gates for non-causal by default
 
@@ -74,17 +77,21 @@ class SinkhornRouter(Module):
         self.competitive = competitive
 
         # experts are a ModuleList where length is number of experts
-        # if a Tensor is given, it must be in shape of (experts, dim_in, dim_out)
+        # if a Tensor is given, it must be in shape of (experts, [optional] heads, dim_in, dim_out)
+
+        if heads > 1:
+            assert torch.is_tensor(experts) and experts.ndim == 4 and experts.shape[1] == heads
 
         if isinstance(experts, list):
             experts = ModuleList(experts)
 
         self.experts = experts
-        self.num_experts = len(experts)
+        num_experts = len(experts)
+        self.num_experts = num_experts
 
         # gating and sinkhorn related
 
-        self.to_gates = nn.Linear(dim, self.num_experts, bias = False)
+        self.to_gate_weight = nn.Parameter(torch.randn(heads, dim, num_experts))
 
         self.temperature = temperature
         self.gumbel_noise = gumbel_noise
@@ -98,24 +105,32 @@ class SinkhornRouter(Module):
         """
         ein notation:
         b - batch
+        h - heads
         n - sequence length
-        d - feature dimension
         e - experts
         m - tokens per expert
+        d, i, o - feature dimension (input and output dimension)
         """
 
-        seq_len = x.shape[-2]
+        seq_len, single_headed = x.shape[-2], x.ndim == 3
         assert divisible_by(seq_len, self.num_experts)
         tokens_per_expert = seq_len // self.num_experts
 
+        # handle single headed
+
+        if single_headed:
+            x = rearrange(x, 'b n d -> b 1 n d')
+
+        assert x.shape[1] == self.heads
+
         # project to gates
 
-        gate_logits = self.to_gates(x)
+        gate_logits = einsum(x, self.to_gate_weight, 'b h n d, h d e -> b h n e')
 
         # masking for variable sequence lengths
 
         if exists(mask):
-            gate_logits = einx.where('b n, b n e, -> b n e', mask, gate_logits, -torch.finfo(gates.dtype).max)
+            gate_logits = einx.where('b n, b h n e, -> b h n e', mask, gate_logits, -torch.finfo(gates.dtype).max)
 
         # sinkhorn ensures balanced routing
         # if non-competitive, do not differentiate through sinkhorn, technique came from megatron, afaict
@@ -135,22 +150,29 @@ class SinkhornRouter(Module):
             gate_values, routed_indices = competitive_gates.topk(tokens_per_expert, dim = -2)
 
         if not self.competitive:
-            selected_gate_logits = einx.get_at('b [n] e, b m e -> b m e', gate_logits, routed_indices)
+            selected_gate_logits = einx.get_at('... [n] e, ... m e -> ... m e', gate_logits, routed_indices)
             gate_values = gate_values * selected_gate_logits.sigmoid()
 
-        gate_values = rearrange(gate_values, 'b m e -> e b m 1')
+        gate_values = rearrange(gate_values, '... m e -> e ... m 1')
 
         # get routed input
 
-        routed = einx.get_at('b [n] d, b m e -> e b m d', x, routed_indices)
+        routed = einx.get_at('... [n] d, ... m e -> e ... m d', x, routed_indices)
+
+        # handle experts being multiheaded tensor
+
+        experts = self.experts
+
+        if torch.is_tensor(experts) and experts.ndim == 3:
+            experts = rearrange(experts, 'e i o -> e 1 i o')
 
         # forward routed input through the correct experts
 
         outputs = []
 
-        for routed_input, expert in zip(routed, self.experts):
+        for routed_input, expert in zip(routed, experts):
             if torch.is_tensor(expert):
-                output = routed_input @ expert
+                output = einsum(routed_input, expert, 'b h m i, h i o -> b h m o')
             else:
                 output = expert(routed_input)
 
@@ -167,10 +189,15 @@ class SinkhornRouter(Module):
         routed_back_outputs = torch.zeros_like(x)
 
         routed_back_outputs = einx.set_at(
-            'b [n] d, b m e, e b m d -> b [n] d',
+            '... [n] d, ... m e, e ... m d -> ... [n] d',
             routed_back_outputs,
             routed_indices,
             outputs
         )
+
+        # if single headed to start off with, squeeze out
+
+        if single_headed:
+            routed_back_outputs = rearrange(routed_back_outputs, 'b 1 n d -> b n d')
 
         return routed_back_outputs
