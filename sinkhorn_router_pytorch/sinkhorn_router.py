@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import List
 
 import torch
@@ -50,7 +52,7 @@ class SinkhornRouter(Module):
         self,
         experts: ModuleList | List[Module] | Module | Tensor,
         causal = False,
-        competitive_gates = None,
+        competitive_gates: bool | None = None,
         gumbel_noise = False,
         temperature = 1.
     ):
