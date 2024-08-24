@@ -61,16 +61,17 @@ class SinkhornRouter(Module):
         experts: ModuleList | List[Module] | Tensor,
         causal = False,
         gumbel_noise = False,
+        sinkhorn_iters = 8,
         temperature = 1.,
-        competitive_gates: bool | None = None
+        competitive: bool | None = None
     ):
         super().__init__()
 
         # only use competitive gates for non-causal by default
 
-        competitive_gates = default(competitive_gates, not causal)
-        assert not (causal and competitive_gates), 'causal sequences cannot have competitive gates'
-        self.competitive_gates = competitive_gates
+        competitive = default(competitive, not causal)
+        assert not (causal and competitiv), 'causal sequences cannot have competitive gates'
+        self.competitive = competitive
 
         # experts are a ModuleList where length is number of experts
         # if a Tensor is given, it must be in shape of (experts, dim_in, dim_out)
@@ -87,32 +88,89 @@ class SinkhornRouter(Module):
 
         self.temperature = temperature
         self.gumbel_noise = gumbel_noise
+        self.sinkhorn_iters = sinkhorn_iters
 
     def forward(
         self,
         x,
         mask = None
     ):
+        """
+        ein notation:
+        b - batch
+        n - sequence length
+        d - feature dimension
+        e - experts
+        m - tokens per expert
+        """
+
         seq_len = x.shape[-2]
         assert divisible_by(seq_len, self.num_experts)
+        tokens_per_expert = seq_len // self.num_experts
 
-        gates = self.to_gates(x)
+        # project to gates
+
+        gate_logits = self.to_gates(x)
 
         # masking for variable sequence lengths
 
         if exists(mask):
-            gates = einx.where('b n, b n d, -> b n d', mask, gates, -torch.finfo(gates.dtype).max)
+            gate_logits = einx.where('b n, b n e, -> b n e', mask, gate_logits, -torch.finfo(gates.dtype).max)
 
+        # sinkhorn ensures balanced routing
         # if non-competitive, do not differentiate through sinkhorn, technique came from megatron, afaict
         # they then just select the sigmoid of the selected gate, which should work given recent papers (Sigmoid MoE etc)
 
-        sinkhorn_context = nullcontext if self.competitive_gates else torch.no_grad
+        sinkhorn_context = nullcontext if self.competitive else torch.no_grad
 
         with sinkhorn_context():
-            gates = sinkhorn(
-                gates,
+
+            competitive_gates = sinkhorn(
+                gate_logits,
                 temperature = self.temperature,
-                gumbel = self.gumbel_noise
+                gumbel = self.gumbel_noise,
+                num_iters = self.sinkhorn_iters
             )
 
-        return gates
+            gate_values, routed_indices = competitive_gates.topk(tokens_per_expert, dim = -2)
+
+        if not self.competitive:
+            selected_gate_logits = einx.get_at('b [n] e, b m e -> b m e', gate_logits, routed_indices)
+            gate_values = gate_values * selected_gate_logits.sigmoid()
+
+        gate_values = rearrange(gate_values, 'b m e -> e b m 1')
+
+        # get routed input
+
+        routed = einx.get_at('b [n] d, b m e -> e b m d', x, routed_indices)
+
+        # forward routed input through the correct experts
+
+        outputs = []
+
+        for routed_input, expert in zip(routed, self.experts):
+            if torch.is_tensor(expert):
+                output = routed_input @ expert
+            else:
+                output = expert(routed_input)
+
+            outputs.append(output)
+
+        outputs = torch.stack(outputs)
+
+        # multiply by the gates, competitive or not
+
+        outputs = outputs * gate_values
+
+        # route back
+
+        routed_back_outputs = torch.zeros_like(x)
+
+        routed_back_outputs = einx.set_at(
+            'b [n] d, b m e, e b m d -> b [n] d',
+            routed_back_outputs,
+            routed_indices,
+            outputs
+        )
+
+        return routed_back_outputs
