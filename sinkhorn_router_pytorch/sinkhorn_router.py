@@ -159,6 +159,9 @@ class SinkhornRouter(Module):
                 noise_inv_temp = noise_inv_temp
             )
 
+            if exists(mask):
+                competitive_gates = einx.where('b n, b h n e, -> b h n e', mask, competitive_gates, 0.)
+
             gate_values, routed_indices = competitive_gates.topk(tokens_per_expert, dim = -2)
             hard_gate_values = (gate_values > 0.5).float()
 
