@@ -70,7 +70,7 @@ class SinkhornRouter(Module):
         # only use competitive gates for non-causal by default
 
         competitive = default(competitive, not causal)
-        assert not (causal and competitiv), 'causal sequences cannot have competitive gates'
+        assert not (causal and competitive), 'causal sequences cannot have competitive gates'
         self.competitive = competitive
 
         # experts are a ModuleList where length is number of experts
