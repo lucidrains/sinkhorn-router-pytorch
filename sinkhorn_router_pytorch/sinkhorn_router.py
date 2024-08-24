@@ -31,7 +31,7 @@ def sinkhorn(
     temperature = 1.,
     eps = 1e-6
 ):
-    t = log(t)
+    t = log(t, eps)
 
     assert temperature > 0.
     t = t / temperature
@@ -40,8 +40,8 @@ def sinkhorn(
         t = t + gumbel_like(t, eps)
 
     for _ in range(num_iters):
-        t = t - t.logsumexp(dim = 2, keepdim = True)
-        t = t - t.logsumexp(dim = 1, keepdim = True)
+        t = t - t.logsumexp(dim = -2, keepdim = True)
+        t = t - t.logsumexp(dim = -1, keepdim = True)
 
     return t.exp()
 
