@@ -1,6 +1,7 @@
 from typing import List
 
 import torch
+from torch import Tensor
 from torch.nn import Module, ModuleList
 import torch.nn.functional as F
 
@@ -8,6 +9,9 @@ import torch.nn.functional as F
 
 def exists(v):
     return v is not None
+
+def default(v, d):
+    return v if exists(v) else d
 
 # sinkhorn related functions
 
@@ -44,10 +48,14 @@ def sinkhorn(
 class SinkhornRouter(Module):
     def __init__(
         self,
-        experts: ModuleList | List[Module] | Module,
-
+        experts: ModuleList | List[Module] | Module | Tensor,
+        causal = False,
+        competitive_gates = None,
+        gumbel_noise = False,
+        temperature = 1.
     ):
         super().__init__()
+        self.experts = experts
 
     def forward(self, x):
         return x
