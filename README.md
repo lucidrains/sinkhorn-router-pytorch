@@ -2,6 +2,34 @@
 
 Self contained pytorch implementation of a sinkhorn based router, for mixture of experts or otherwise. Will contain both a causal and non-causal variant. The causal variant will follow the example used in Megatron
 
+## Install
+
+```bash
+$ pip install sinkhorn-router-pytorch
+```
+
+## Usage
+
+```python
+import torch
+from torch import nn
+from sinkhorn_router_pytorch import SinkhornRouter
+
+experts = nn.Parameter(torch.randn(8, 8, 512, 512)) # (experts, heads, dim [in], dim [out])
+
+router = SinkhornRouter(
+    dim = 512,
+    experts = experts,
+    competitive = True,
+    causal = False,
+)
+
+x = torch.randn(1, 8, 1017, 512)
+out = router(x)
+
+assert x.shape == out.shape
+```
+
 ## Citations
 
 ```bibtex

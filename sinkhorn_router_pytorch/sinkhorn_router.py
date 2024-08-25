@@ -75,7 +75,6 @@ class SinkhornRouter(Module):
         experts: ModuleList | List[Module] | Tensor | None = None,
         causal = False,
         sinkhorn_iters = 8,
-        heads = 1,
         temperature = 1.,
         gumbel_noise = False,
         noise_inv_temp = 1.,
@@ -89,21 +88,25 @@ class SinkhornRouter(Module):
         if exists(experts):
             num_experts = len(experts)
 
-        self.heads = heads
-
         # only use competitive gates for non-causal by default
 
         competitive = default(competitive, not causal)
         assert not (causal and competitive), 'causal sequences cannot have competitive gates'
         self.competitive = competitive
 
-        self.min_seq_len_route = min_seq_len_route
+        self.min_seq_len_route = default(min_seq_len_route, num_experts)
 
         # experts are a ModuleList where length is number of experts
         # if a Tensor is given, it must be in shape of (experts, [optional] heads, dim_in, dim_out)
 
-        if heads > 1 and exists(experts):
-            assert torch.is_tensor(experts) and experts.ndim == 4 and experts.shape[1] == heads
+        heads = None
+
+        if exists(experts):
+            heads = default(heads, 1 if experts.ndim == 3 else experts.shape[1])
+
+            assert torch.is_tensor(experts) and experts.ndim == 4 and experts.shape[1] == heads, f'experts do not have the correct number of heads. expected {self.heads} - received {experts.shape[1]}'
+
+        self.heads = default(heads, 1)
 
         if isinstance(experts, list):
             experts = ModuleList(experts)
@@ -120,11 +123,74 @@ class SinkhornRouter(Module):
         self.noise_inv_temp = noise_inv_temp
         self.sinkhorn_iters = sinkhorn_iters
 
+    def non_routed_forward(
+        self,
+        x,
+        mask = None
+    ):
+        single_headed = x.ndim == 3
+
+        # handle single headed
+
+        if single_headed:
+            x = rearrange(x, 'b n d -> b 1 n d')
+
+        assert x.shape[1] == self.heads, f'expected input to have head dimension of {self.heads} but received {x.shape[1]}'
+
+        # expert routing is just an argmax
+
+        gates = einsum(x, self.to_gate_weight, 'b h n d, h d e -> b h n e')
+
+        expert_indices = gates.argmax(dim = -1)
+
+        # final gate values will just sigmoid(gates) for non-competitive, and nothing for competitive
+
+        gate_values = None
+
+        if not self.competitive:
+            gate_values = einx.get('b h n [e], b h n -> b h n 1', gates, expert_indices).sigmoid()
+
+        # forward experts in a non-balanced routed way
+
+        experts = self.experts
+
+        if single_headed and torch.is_tensor(experts):
+            experts = rearrange(experts, 'e i o -> e 1 i o')
+
+        # handle both experts being a multi-headed tensor (for switchehead mixture-of-attention)
+        # or the traditional experts, where each expert is a separate module (usually feedforward)
+
+        if torch.is_tensor(self.experts):
+            selected_experts = einx.get_at('[e] h i o, b h n -> b h n i o', experts, expert_indices)
+            output = einsum(x, selected_experts, 'b h n i, b h n i o -> b h n o')
+        else:
+            output = torch.zeros_like(x)
+
+            for expert_index, expert in enumerate(experts):
+                one_expert_mask = expert_indices == expert_index
+                one_expert_inputs = x[one_expert_mask]
+                one_expert_output = expert(one_expert_inputs)
+
+                output[one_expert_mask] = one_expert_output
+
+        # gate values
+
+        if exists(gate_values):
+            output = einx.multiply('b h n d, b h n -> b h n d', output, gate_values)
+
+        # squeeze out single head
+
+        if single_headed:
+            output = rearrange(output, 'b 1 n d -> b n d')
+
+        return output
+
     def forward(
         self,
         x,
         mask = None,
-        noise_inv_temp: float | None = None
+        noise_inv_temp: float | None = None,
+        route: bool | None = None
     ):
         """
         ein notation:
@@ -141,6 +207,13 @@ class SinkhornRouter(Module):
         noise_inv_temp = default(noise_inv_temp, self.noise_inv_temp)
 
         batch, seq_len, single_headed = x.shape[0], x.shape[-2], x.ndim == 3
+
+        # determine whether routing is needed or not
+
+        route = default(route, seq_len > self.min_seq_len_route)
+
+        if not route:
+            return self.non_routed_forward(x, mask)
 
         # auto pad to correct multiple for divying up tokens amongst 'experts'
 
