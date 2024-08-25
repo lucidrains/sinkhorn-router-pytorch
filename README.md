@@ -25,9 +25,7 @@ router = SinkhornRouter(
 )
 
 x = torch.randn(1, 8, 1017, 512)
-out = router(x)
-
-assert x.shape[:-1] == out.shape[:-1]
+out = router(x) # (1, 8, 1017, 256)
 ```
 
 ## Citations
