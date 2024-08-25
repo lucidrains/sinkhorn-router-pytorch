@@ -230,12 +230,15 @@ class SinkhornRouter(Module):
 
         padded_seq_len = x.shape[-2]
 
-        if seq_pad > 0 and not exists(mask):
-            mask = einx.less(
-                'n, b -> b n',
-                torch.arange(padded_seq_len, device = device),
-                torch.full((batch,), seq_len, device = device)
-            )
+        if seq_pad > 0:
+            if not exists(mask):
+                mask = einx.less(
+                    'n, b -> b n',
+                    torch.arange(padded_seq_len, device = device),
+                    torch.full((batch,), seq_len, device = device)
+                )
+            else:
+                mask = F.pad(mask, (0, seq_pad), value = False)
 
         tokens_per_expert = padded_seq_len // self.num_experts
 
