@@ -10,7 +10,7 @@ from torch.nn import Module, ModuleList
 import torch.nn.functional as F
 
 import einx
-from einops import rearrange, einsum
+from einops import rearrange, repeat, einsum
 
 # helper functions
 
@@ -84,7 +84,8 @@ class SinkhornRouter(Module):
         heads: int | None = None,
         num_experts: int | None = None,
         competitive: bool | None = None,
-        min_seq_len_route: int | None = None
+        min_seq_len_route: int | None = None,
+        extra_tokens_per_expert = 0
     ):
         super().__init__()
         assert exists(experts) ^ exists(num_experts), 'either `experts` or `num_experts` is given, but not both'
@@ -122,6 +123,8 @@ class SinkhornRouter(Module):
 
         self.experts = experts
         self.num_experts = num_experts
+
+        self.extra_tokens_per_expert = extra_tokens_per_expert
 
         # gating and sinkhorn related
 
@@ -240,7 +243,7 @@ class SinkhornRouter(Module):
             else:
                 mask = F.pad(mask, (0, seq_pad), value = False)
 
-        tokens_per_expert = padded_seq_len // self.num_experts
+        tokens_per_expert = padded_seq_len // self.num_experts + self.extra_tokens_per_expert
 
         # handle single headed
 
@@ -346,13 +349,11 @@ class SinkhornRouter(Module):
 
         # route back
 
-        routed_back_outputs = torch.zeros_like(x)
-
-        routed_back_outputs = einx.set_at(
-            '... [n] d, ... m e, e ... m d -> ... [n] d',
-            routed_back_outputs,
-            routed_indices,
-            outputs
+        routed_back_outputs = torch.zeros_like(x).scatter_reduce(
+            -2,
+            repeat(routed_indices, 'h m e -> h (m e) d', d = outputs.shape[-1]),
+            rearrange(outputs, 'e h m d -> h (m e) d'),
+            reduce = 'mean'
         )
 
         # split out batch again
