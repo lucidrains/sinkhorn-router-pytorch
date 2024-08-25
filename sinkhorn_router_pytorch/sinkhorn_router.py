@@ -328,17 +328,20 @@ class SinkhornRouter(Module):
 
         # forward routed input through the correct experts
 
-        outputs = []
+        if torch.is_tensor(experts):
+            outputs = einsum(routed, experts, 'e h m i, e h i o -> e h m o')
+        else:
+            outputs = []
 
-        for routed_input, expert in zip(routed, experts):
-            if torch.is_tensor(expert):
-                output = einsum(routed_input, expert, 'h m i, h i o -> h m o')
-            else:
-                output = expert(routed_input)
+            for routed_input, expert in zip(routed, experts):
+                if torch.is_tensor(expert):
+                    output = einsum(routed_input, expert, 'h m i, h i o -> h m o')
+                else:
+                    output = expert(routed_input)
 
-            outputs.append(output)
+                outputs.append(output)
 
-        outputs = torch.stack(outputs)
+            outputs = torch.stack(outputs)
 
         # multiply by the gates, competitive or not
 
