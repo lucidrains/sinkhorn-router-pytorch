@@ -349,10 +349,12 @@ class SinkhornRouter(Module):
 
         # route back
 
-        routed_back_outputs = torch.zeros_like(x).scatter_reduce(
-            -2,
-            repeat(routed_indices, 'h m e -> h (m e) d', d = outputs.shape[-1]),
-            rearrange(outputs, 'e h m d -> h (m e) d'),
+        routed_back_outputs = x.new_zeros((*x.shape[:-1], outputs.shape[-1]))
+
+        routed_back_outputs = routed_back_outputs.scatter_reduce(
+            dim = -2,
+            index = repeat(routed_indices, 'h m e -> h (m e) d', d = outputs.shape[-1]),
+            src = rearrange(outputs, 'e h m d -> h (m e) d'),
             reduce = 'mean'
         )
 

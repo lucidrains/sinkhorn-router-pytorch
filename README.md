@@ -15,7 +15,7 @@ import torch
 from torch import nn
 from sinkhorn_router_pytorch import SinkhornRouter
 
-experts = nn.Parameter(torch.randn(8, 8, 512, 512)) # (experts, heads, dim [in], dim [out])
+experts = nn.Parameter(torch.randn(8, 8, 512, 256)) # (experts, heads, dim [in], dim [out])
 
 router = SinkhornRouter(
     dim = 512,
@@ -27,7 +27,7 @@ router = SinkhornRouter(
 x = torch.randn(1, 8, 1017, 512)
 out = router(x)
 
-assert x.shape == out.shape
+assert x.shape[:-1] == out.shape[:-1]
 ```
 
 ## Citations
