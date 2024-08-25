@@ -37,7 +37,7 @@ def pad_seq_to_multiple(t, mult):
 # sinkhorn related functions
 
 def log(t, eps = 1e-6):
-    return torch.log(t.clamp(min = eps))
+    return t.clamp(min = eps).log()
 
 def gumbel_like(t, eps = 1e-6):
     noise = torch.rand_like(t)
@@ -80,7 +80,8 @@ class SinkhornRouter(Module):
         gumbel_noise = False,
         noise_inv_temp = 1.,
         num_experts: int | None = None,
-        competitive: bool | None = None
+        competitive: bool | None = None,
+        min_seq_len_route: int | None = None
     ):
         super().__init__()
         assert exists(experts) ^ exists(num_experts), 'either `experts` or `num_experts` is given, but not both'
@@ -95,6 +96,8 @@ class SinkhornRouter(Module):
         competitive = default(competitive, not causal)
         assert not (causal and competitive), 'causal sequences cannot have competitive gates'
         self.competitive = competitive
+
+        self.min_seq_len_route = min_seq_len_route
 
         # experts are a ModuleList where length is number of experts
         # if a Tensor is given, it must be in shape of (experts, [optional] heads, dim_in, dim_out)
@@ -133,6 +136,8 @@ class SinkhornRouter(Module):
         d, i, o - feature dimension (input and output dimension)
         """
 
+        device = x.device
+
         noise_inv_temp = default(noise_inv_temp, self.noise_inv_temp)
 
         batch, seq_len, single_headed = x.shape[0], x.shape[-2], x.ndim == 3
@@ -141,11 +146,16 @@ class SinkhornRouter(Module):
 
         x, seq_pad = pad_seq_to_multiple(x, self.num_experts)
 
-        if seq_pad > 0 and not exists(mask):
-            mask = x.new_ones((batch, seq_len)).bool()
-            mask = F.pad(mask, (0, seq_pad), value = False)
+        padded_seq_len = x.shape[-2]
 
-        tokens_per_expert = seq_len // self.num_experts
+        if seq_pad > 0 and not exists(mask):
+            mask = einx.less(
+                'n, b -> b n',
+                torch.arange(padded_seq_len, device = device),
+                torch.full((batch,), seq_len, device = device)
+            )
+
+        tokens_per_expert = padded_seq_len // self.num_experts
 
         # handle single headed
 
