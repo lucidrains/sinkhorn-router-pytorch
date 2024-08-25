@@ -17,8 +17,11 @@ from einops import rearrange, einsum
 def exists(v):
     return v is not None
 
-def default(v, d):
-    return v if exists(v) else d
+def default(*args):
+    for arg in args:
+        if exists(arg):
+            return arg
+    return None
 
 def divisible_by(num, den):
     return (num % den) == 0
@@ -78,6 +81,7 @@ class SinkhornRouter(Module):
         temperature = 1.,
         gumbel_noise = False,
         noise_inv_temp = 1.,
+        heads: int | None = None,
         num_experts: int | None = None,
         competitive: bool | None = None,
         min_seq_len_route: int | None = None
@@ -99,14 +103,19 @@ class SinkhornRouter(Module):
         # experts are a ModuleList where length is number of experts
         # if a Tensor is given, it must be in shape of (experts, [optional] heads, dim_in, dim_out)
 
-        heads = None
+        default_heads = None
 
         if exists(experts):
-            heads = default(heads, 1 if experts.ndim == 3 else experts.shape[1])
+            if torch.is_tensor(experts):
+                default_heads = 1 if experts.ndim == 3 else experts.shape[1]
+            else:
+                default_heads = 1
 
-            assert torch.is_tensor(experts) and experts.ndim == 4 and experts.shape[1] == heads, f'experts do not have the correct number of heads. expected {self.heads} - received {experts.shape[1]}'
+            assert not exists(heads) or heads == default_heads, f'detected {default_heads} heads from the experts, but also received conflicting hyperparameter heads={heads}'
 
-        self.heads = default(heads, 1)
+        heads = default(heads, default_heads, 1)
+
+        self.heads = heads
 
         if isinstance(experts, list):
             experts = ModuleList(experts)
