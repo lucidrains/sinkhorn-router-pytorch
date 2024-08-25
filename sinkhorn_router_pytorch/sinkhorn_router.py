@@ -39,10 +39,10 @@ def pad_seq_to_multiple(t, mult):
 
 # sinkhorn related functions
 
-def log(t, eps = 1e-6):
+def log(t, eps = 1e-10):
     return t.clamp(min = eps).log()
 
-def gumbel_like(t, eps = 1e-6):
+def gumbel_like(t, eps = 1e-10):
     noise = torch.rand_like(t)
     return -log(-log(noise, eps), eps)
 
@@ -51,7 +51,7 @@ def sinkhorn(
     num_iters = 8,
     gumbel = False,
     temperature = 1.,
-    eps = 1e-6,
+    eps = 1e-10,
     noise_inv_temp = 1.
 ):
     t = log(t, eps)
@@ -246,14 +246,21 @@ class SinkhornRouter(Module):
 
         assert x.shape[1] == self.heads, f'expected input to have head dimension of {self.heads} but received {x.shape[1]}'
 
+        # fold the batch into the sequence
+
+        x = rearrange(x, 'b h n d -> h (b n) d')
+
+        if exists(mask):
+            mask = rearrange(mask, 'b n -> (b n)')
+
         # project to gates
 
-        gate_logits = einsum(x, self.to_gate_weight, 'b h n d, h d e -> b h n e')
+        gate_logits = einsum(x, self.to_gate_weight, 'h n d, h d e -> h n e')
 
         # masking for variable sequence lengths
 
         if exists(mask):
-            gate_logits = einx.where('b n, b h n e, -> b h n e', mask, gate_logits, -torch.finfo(gate_logits.dtype).max)
+            gate_logits = einx.where('n, h n e, -> h n e', mask, gate_logits, -torch.finfo(gate_logits.dtype).max)
 
         # sinkhorn ensures balanced routing
         # if non-competitive, do not differentiate through sinkhorn, technique came from megatron, afaict
@@ -272,7 +279,7 @@ class SinkhornRouter(Module):
             )
 
             if exists(mask):
-                competitive_gates = einx.where('b n, b h n e, -> b h n e', mask, competitive_gates, 0.)
+                competitive_gates = einx.where('n, h n e, -> h n e', mask, competitive_gates, 0.)
 
             gate_values, routed_indices = competitive_gates.topk(tokens_per_expert, dim = -2)
             hard_gate_values = (gate_values > 0.5).float()
@@ -293,6 +300,10 @@ class SinkhornRouter(Module):
         # return gates and routing indices if no experts
 
         if not exists(self.experts):
+
+            routed_indices = rearrange(routed_indices, 'h (b n) ... -> b h n ...', b = batch)
+            gate_values = rearrange(gate_values, 'h (b n) -> b h n', b = batch)
+
             if single_headed:
                 routed_indices, gate_values = tuple(rearrange(t, 'b 1 ... -> b ...') for t in (routed_indices, gate_values))
 
@@ -315,7 +326,7 @@ class SinkhornRouter(Module):
 
         for routed_input, expert in zip(routed, experts):
             if torch.is_tensor(expert):
-                output = einsum(routed_input, expert, 'b h m i, h i o -> b h m o')
+                output = einsum(routed_input, expert, 'h m i, h i o -> h m o')
             else:
                 output = expert(routed_input)
 
@@ -326,7 +337,7 @@ class SinkhornRouter(Module):
         # multiply by the gates, competitive or not
 
         outputs = einx.multiply(
-            'e b h m d, b h m e -> e b h m d',
+            'e h m d, h m e -> e h m d',
             outputs, gate_values
         )
 
@@ -340,6 +351,10 @@ class SinkhornRouter(Module):
             routed_indices,
             outputs
         )
+
+        # split out batch again
+
+        routed_back_outputs = rearrange(routed_back_outputs, 'h (b n) ... -> b h n ...', b = batch)
 
         # remove seq padding if auto-padded
 
