@@ -1,8 +1,7 @@
 from __future__ import annotations
+
 from math import ceil
 from contextlib import nullcontext
-
-from typing import List
 
 import torch
 from torch import Tensor, nn
@@ -75,7 +74,7 @@ class SinkhornRouter(Module):
         self,
         dim,
         *,
-        experts: ModuleList | List[Module] | Tensor | None = None,
+        experts: ModuleList | list[Module] | Tensor | None = None,
         causal = False,
         sinkhorn_iters = 8,
         temperature = 1.,
