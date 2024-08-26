@@ -69,6 +69,26 @@ def sinkhorn(
 
 # main module
 
+class Gating(Module):
+    def __init__(
+        self,
+        dim,
+        *,
+        num_experts,
+        heads = 1
+    ):
+        super().__init__()
+        self.to_gate_weight = nn.Parameter(torch.randn(heads, dim, num_experts))
+
+    def forward(self, x):
+        single_headed = x.ndim == 3
+
+        if single_headed:
+            x = rearrange(x, 'b n d -> b 1 n d')
+
+        gates = einsum(x, self.to_gate_weight, 'b h n d, h d e -> b h n e')
+        return gates
+
 class SinkhornRouter(Module):
     def __init__(
         self,
@@ -84,7 +104,8 @@ class SinkhornRouter(Module):
         num_experts: int | None = None,
         competitive: bool | None = None,
         min_seq_len_route: int | None = None,
-        extra_tokens_per_expert = 0
+        extra_tokens_per_expert = 0,
+        has_gating = True
     ):
         super().__init__()
         assert exists(experts) ^ exists(num_experts), 'either `experts` or `num_experts` is given, but not both'
@@ -127,7 +148,7 @@ class SinkhornRouter(Module):
 
         # gating and sinkhorn related
 
-        self.to_gate_weight = nn.Parameter(torch.randn(heads, dim, num_experts))
+        self.to_gates = Gating(dim, num_experts = num_experts, heads = heads) if has_gating else None
 
         self.temperature = temperature
         self.gumbel_noise = gumbel_noise
@@ -150,7 +171,7 @@ class SinkhornRouter(Module):
 
         # expert routing is just an argmax
 
-        gates = einsum(x, self.to_gate_weight, 'b h n d, h d e -> b h n e')
+        gates = self.to_gates(x)
 
         expert_indices = gates.argmax(dim = -1)
 
@@ -201,8 +222,11 @@ class SinkhornRouter(Module):
         x,
         mask = None,
         noise_inv_temp: float | None = None,
-        route: bool | None = None
+        route: bool | None = None,
+        gates: Tensor | None = None,
     ):
+        assert exists(gates) ^ exists(self.to_gates)
+
         """
         ein notation:
         b - batch
@@ -251,21 +275,24 @@ class SinkhornRouter(Module):
 
         assert x.shape[1] == self.heads, f'expected input to have head dimension of {self.heads} but received {x.shape[1]}'
 
+        # project to gates
+
+        if not exists(gates):
+            gates = self.to_gates(x)
+
         # fold the batch into the sequence
 
         x = rearrange(x, 'b h n d -> h (b n) d')
 
+        gates = rearrange(gates, 'b h n e -> h (b n) e')
+
         if exists(mask):
             mask = rearrange(mask, 'b n -> (b n)')
-
-        # project to gates
-
-        gate_logits = einsum(x, self.to_gate_weight, 'h n d, h d e -> h n e')
 
         # masking for variable sequence lengths
 
         if exists(mask):
-            gate_logits = einx.where('n, h n e, -> h n e', mask, gate_logits, -torch.finfo(gate_logits.dtype).max)
+            gates = einx.where('n, h n e, -> h n e', mask, gates, -torch.finfo(gates.dtype).max)
 
         # sinkhorn ensures balanced routing
         # if non-competitive, do not differentiate through sinkhorn, technique came from megatron, afaict
@@ -276,7 +303,7 @@ class SinkhornRouter(Module):
         with sinkhorn_context():
 
             competitive_gates = sinkhorn(
-                gate_logits,
+                gates,
                 temperature = self.temperature,
                 gumbel = self.gumbel_noise,
                 num_iters = self.sinkhorn_iters,
@@ -299,8 +326,8 @@ class SinkhornRouter(Module):
         # causal, non-competitive will select the gate logits and use the sigmoid - used in megatron
 
         if not self.competitive:
-            selected_gate_logits = einx.get_at('... [n] e, ... m e -> ... m e', gate_logits, routed_indices)
-            gate_values = gate_values * selected_gate_logits.sigmoid()
+            selected_gates = einx.get_at('... [n] e, ... m e -> ... m e', gates, routed_indices)
+            gate_values = gate_values * selected_gates.sigmoid()
 
         # return gates and routing indices if no experts
 
