@@ -280,6 +280,11 @@ class SinkhornRouter(Module):
         if not exists(gates):
             gates = self.to_gates(x)
 
+        elif seq_pad > 0:
+            gates = F.pad(gates, (0, 0, 0, seq_pad), value = 0.)
+
+        assert gates.shape[-1] == self.num_experts
+
         # fold the batch into the sequence
 
         x = rearrange(x, 'b h n d -> h (b n) d')

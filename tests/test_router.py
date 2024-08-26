@@ -2,7 +2,7 @@ import pytest
 
 import torch
 from torch import nn
-from sinkhorn_router_pytorch import SinkhornRouter
+from sinkhorn_router_pytorch import SinkhornRouter, Gating
 
 @pytest.mark.parametrize('competitive,causal', [(True, False), (False, True), (False, False)])
 @pytest.mark.parametrize('seq_len', (1, 77, 1024, 1999))
@@ -75,3 +75,29 @@ def test_multiheaded_experts(
     out = router(x, mask = mask)
 
     assert out.shape == (2, 8, seq_len, 256)
+
+def test_switchhead():
+
+    value_router = SinkhornRouter(
+        dim = 512,
+        experts = nn.Parameter(torch.randn(16, 8, 512, 256)),
+        causal = True,
+        has_gating = False
+    )
+
+    output_router = SinkhornRouter(
+        dim = 512,
+        experts = nn.Parameter(torch.randn(16, 8, 512, 256)),
+        causal = True,
+        has_gating = False
+    )
+
+    x = torch.randn(2, 8, 1024, 512)
+
+    gating = Gating(dim = 512, heads = 8, num_experts = 16)
+
+    gates = gating(x)
+
+    value_router_out = value_router(x, gates = gates)
+
+    router_out = output_router(x, gates = gates)
