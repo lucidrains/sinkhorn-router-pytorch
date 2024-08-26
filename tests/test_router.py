@@ -1,8 +1,16 @@
+import pytest
+
 import torch
 from torch import nn
 from sinkhorn_router_pytorch import SinkhornRouter
 
-def test_moe():
+@pytest.mark.parametrize('competitive,causal', [(True, False), (False, True), (False, False)])
+@pytest.mark.parametrize('seq_len', (1, 77, 1024, 1999))
+def test_moe(
+    competitive,
+    causal,
+    seq_len
+):
 
     experts = [
         nn.Linear(512, 512),
@@ -14,30 +22,37 @@ def test_moe():
     router = SinkhornRouter(
         dim = 512,
         experts = experts,
-        competitive = False,
-        causal = False,
+        competitive = competitive,
+        causal = causal,
     )
 
     assert router.num_experts == 4
 
-    x = torch.randn(1, 1017, 512)
+    x = torch.randn(2, seq_len, 512)
     out = router(x)
 
-    assert out.shape == (1, 1017, 512)
+    assert out.shape == (2, seq_len, 512)
 
-def test_multiheaded_experts():
+@pytest.mark.parametrize('competitive,causal', [(True, False), (False, True), (False, False)])
+@pytest.mark.parametrize('seq_len', (1, 77, 1024, 1999))
+def test_multiheaded_experts(
+    competitive,
+    causal,
+    seq_len
+):
+
     experts = nn.Parameter(torch.randn(16, 8, 512, 256)) # (experts, heads, dim [in], dim [out])
 
     router = SinkhornRouter(
         dim = 512,
         experts = experts,
-        competitive = False,
-        causal = False,
+        competitive = competitive,
+        causal = causal,
     )
 
     assert router.num_experts == 16
 
-    x = torch.randn(1, 8, 1017, 512)
+    x = torch.randn(2, 8, seq_len, 512)
     out = router(x)
 
-    assert out.shape == (1, 8, 1017, 256)
+    assert out.shape == (2, 8, seq_len, 256)

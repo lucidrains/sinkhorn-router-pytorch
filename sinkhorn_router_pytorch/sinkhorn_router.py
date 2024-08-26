@@ -159,7 +159,7 @@ class SinkhornRouter(Module):
         gate_values = None
 
         if not self.competitive:
-            gate_values = einx.get('b h n [e], b h n -> b h n 1', gates, expert_indices).sigmoid()
+            gate_values = einx.get_at('b h n [e], b h n -> b h n', gates, expert_indices).sigmoid()
 
         # forward experts in a non-balanced routed way
 
