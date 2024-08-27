@@ -74,8 +74,6 @@ class SwitchHead(Module):
         keys = self.split_heads(keys)
 
         gates = self.to_gates(x)
-
-        x = repeat(x, 'b n d -> b h n d', h = self.heads)
         values = self.value_router(x, gates = gates)
 
         queries = queries * self.scale

@@ -271,7 +271,7 @@ class SinkhornRouter(Module):
         # handle single headed
 
         if single_headed:
-            x = rearrange(x, 'b n d -> b 1 n d')
+            x = repeat(x, 'b n d -> b h n d', h = self.heads)
 
         assert x.shape[1] == self.heads, f'expected input to have head dimension of {self.heads} but received {x.shape[1]}'
 
@@ -402,7 +402,7 @@ class SinkhornRouter(Module):
 
         # if single headed to start off with, squeeze out
 
-        if single_headed:
+        if single_headed and self.heads == 1:
             routed_back_outputs = rearrange(routed_back_outputs, 'b 1 n d -> b n d')
 
         return routed_back_outputs
