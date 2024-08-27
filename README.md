@@ -51,3 +51,14 @@ out = router(x) # (1, 8, 1017, 256)
     url     = {https://api.semanticscholar.org/CorpusID:267413070}
 }
 ```
+
+```bibtex
+@article{Csordas2023SwitchHeadAT,
+    title   = {SwitchHead: Accelerating Transformers with Mixture-of-Experts Attention},
+    author  = {R'obert Csord'as and Piotr Piekos and Kazuki Irie and J{\"u}rgen Schmidhuber},
+    journal = {ArXiv},
+    year    = {2023},
+    volume  = {abs/2312.07987},
+    url     = {https://api.semanticscholar.org/CorpusID:266191825}
+}
+```

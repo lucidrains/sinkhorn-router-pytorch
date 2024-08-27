@@ -76,7 +76,7 @@ def test_multiheaded_experts(
 
     assert out.shape == (2, 8, seq_len, 256)
 
-def test_switchhead():
+def test_switchhead_like_routing():
 
     value_router = SinkhornRouter(
         dim = 512,
@@ -101,3 +101,19 @@ def test_switchhead():
     value_router_out = value_router(x, gates = gates)
 
     router_out = output_router(x, gates = gates)
+
+
+def test_switchhead():
+    from sinkhorn_router_pytorch.switchhead import SwitchHead
+
+    attn = SwitchHead(
+        dim = 512,
+        heads = 8,
+        num_experts = 16,
+        dim_head = 64,
+        causal = True
+    )
+
+    x = torch.randn(2, 1017, 512)
+    out = attn(x)
+    assert x.shape == out.shape
