@@ -40,19 +40,16 @@ class SwitchHead(Module):
         self.to_q = nn.Linear(dim, dim_inner, bias = False)
         self.to_k = nn.Linear(dim, dim_inner, bias = False)
 
-        self.value_experts = nn.Parameter(torch.randn(num_experts, heads, dim, dim_head))
-        self.output_experts = nn.Parameter(torch.randn(num_experts, heads, dim_head, dim))
-
         self.value_router = SinkhornRouter(
             dim = dim,
-            experts = self.value_experts,
+            experts = (num_experts, heads, dim, dim_head),
             causal = causal,
             has_gating = False
         )
 
         self.output_router = SinkhornRouter(
             dim = dim,
-            experts = self.output_experts,
+            experts = (num_experts, heads, dim_head, dim),
             causal = causal,
             has_gating = False
         )

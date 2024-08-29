@@ -94,7 +94,14 @@ class SinkhornRouter(Module):
         self,
         dim,
         *,
-        experts: ModuleList | list[Module] | Tensor | None = None,
+        experts: (
+            ModuleList |
+            list[Module] |
+            Tensor |
+            tuple[int, int, int] |
+            tuple[int, int, int, int] |
+            None
+        ) = None,
         causal = False,
         sinkhorn_iters = 8,
         temperature = 1.,
@@ -111,6 +118,13 @@ class SinkhornRouter(Module):
         assert exists(experts) ^ exists(num_experts), 'either `experts` or `num_experts` is given, but not both'
 
         if exists(experts):
+
+            # experts can be instantiated as Parameter if a tuple is given as the shape
+
+            if isinstance(experts, tuple):
+                experts = nn.Parameter(torch.zeros(experts))
+                nn.init.normal_(experts, std = 0.02)
+
             num_experts = len(experts)
 
         # only use competitive gates for non-causal by default
